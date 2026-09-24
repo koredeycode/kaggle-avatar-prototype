@@ -92,3 +92,5 @@ class AvatarAudio {
     this.worklet = null;
   }
 }
+
+export { AvatarAudio };

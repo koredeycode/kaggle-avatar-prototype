@@ -108,3 +108,5 @@ class AvatarRenderer {
     requestAnimationFrame((next) => this.render(next));
   }
 }
+
+export { AvatarRenderer };
