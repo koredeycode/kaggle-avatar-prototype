@@ -1,0 +1,17 @@
+# Kaggle notebook
+
+The notebook clones the GitHub repository into `/kaggle/working/kaggle-avatar-prototype`. Set `GITHUB_REPO` to the repository URL and optionally set `GITHUB_REF` to the branch before running `00_kaggle_prototype.ipynb` top to bottom. The clone URL must not contain an embedded token.
+
+For a public repository, no GitHub credential is needed. For a private repository, set `GITHUB_PRIVATE=true` and attach a Kaggle Secret named `GITHUB_TOKEN`; the notebook uses a temporary `GIT_ASKPASS` helper and never writes the token into the URL, repository config, notebook output, or source file.
+
+Default mode is `mock`:
+
+- No model downloads.
+- No AI provider keys.
+- FastAPI/WebSocket and browser avatar run.
+- TTS is a valid PCM tone rather than speech.
+- Cloudflare Quick Tunnel is started for the browser path.
+
+The Quick Tunnel is public, temporary, and not production hosting. It exposes only FastAPI, not Ollama or model workers, and must be stopped before ending the session. The tunnel installer accepts `CLOUDFLARED_URL` and optional `CLOUDFLARED_SHA256` for a pinned binary.
+
+For a local model profile, add pinned model assets and set `MODEL_MODE=local`, `TTS_MODE=kokoro`, and the relevant model paths in a separate qualification notebook. Do not attach GitHub, named Cloudflare, R2, or AI provider secrets to the keyless notebook.

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kaggle Avatar Prototype</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="avatar-panel">
+        <div class="avatar-wrap">
+          <canvas id="avatar" width="720" height="720" aria-label="2D avatar"></canvas>
+          <div class="status-pill" id="status">offline</div>
+        </div>
+        <div class="controls">
+          <input id="token" type="password" autocomplete="off" placeholder="Runtime token">
+          <button id="connect">Connect</button>
+          <button id="disconnect" disabled>Disconnect</button>
+          <button id="interrupt" disabled>Interrupt</button>
+        </div>
+        <div class="controls">
+          <button id="ptt" disabled>Hold to talk</button>
+          <button id="textMode" disabled>Send text</button>
+          <input id="text" placeholder="Type a message" disabled>
+        </div>
+        <p class="hint" id="hint">Use headphones for the first microphone test. The mock mode returns a tone and captions; local model mode requires the configured model files.</p>
+      </section>
+      <section class="conversation-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">KAGGLE LOCAL PROTOTYPE</p>
+            <h1>Talk to the avatar</h1>
+          </div>
+          <button id="clear" class="quiet">Clear captions</button>
+        </div>
+        <div id="captions" class="captions" aria-live="polite"></div>
+        <form id="textForm" class="text-form">
+          <input id="textInput" placeholder="Try: hello avatar" autocomplete="off">
+          <button type="submit" disabled>Send</button>
+        </form>
+        <div class="metrics" id="metrics">Not connected</div>
+      </section>
+    </main>
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
