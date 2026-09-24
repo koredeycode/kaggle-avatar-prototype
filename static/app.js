@@ -26,6 +26,7 @@ const textButton = document.querySelector("#textMode");
 const textInput = document.querySelector("#text");
 const textForm = document.querySelector("#textForm");
 const textFormInput = document.querySelector("#textInput");
+const textFormSubmit = textForm.querySelector('button[type="submit"]');
 const captions = document.querySelector("#captions");
 const status = document.querySelector("#status");
 const metrics = document.querySelector("#metrics");
@@ -52,6 +53,7 @@ function setControls(connected) {
   textButton.disabled = !connected;
   textInput.disabled = !connected;
   textFormInput.disabled = !connected;
+  textFormSubmit.disabled = !connected;
 }
 
 function send(value) {
@@ -266,12 +268,21 @@ pttButton.addEventListener("pointerup", () => {
   state.ptt = false;
   send({ type: "input.end", request_id: state.pttRequestId || crypto.randomUUID() });
 });
-textButton.addEventListener("click", startMicrophone);
-textForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const text = textFormInput.value.trim();
+function submitText(value) {
+  const text = value.trim();
   if (!text) return;
   send({ type: "text.submit", text, request_id: crypto.randomUUID() });
+}
+textButton.addEventListener("click", () => textInput.focus());
+textInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  submitText(textInput.value);
+  textInput.value = "";
+});
+textForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submitText(textFormInput.value);
   textFormInput.value = "";
 });
 document.querySelector("#clear").addEventListener("click", () => { captions.replaceChildren(); });
