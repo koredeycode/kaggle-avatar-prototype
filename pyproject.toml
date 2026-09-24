@@ -24,6 +24,14 @@ dev = [
   "websockets>=12,<16"
 ]
 
+local-models = [
+  "huggingface-hub>=0.24,<1",
+  "onnxruntime>=1.18,<2",
+  "sherpa-onnx>=0.4,<1",
+  "silero-vad>=5,<6",
+  "kokoro>=0.9,<1"
+]
+
 [project.scripts]
 avatar-prototype = "avatar_prototype.main:run"
 

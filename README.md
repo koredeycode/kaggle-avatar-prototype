@@ -14,7 +14,7 @@ A temporary, single-user conversational avatar prototype for local model experim
 - Dependency-free counters, p50/p95 timing summaries, recent spans, and browser latency diagnostics.
 - No third-party AI API key is required for mock mode.
 
-The default is deliberately `mock` mode. Heavy model files and optional runtimes are not silently downloaded.
+The local quick start defaults to `mock` mode. The Kaggle notebook attempts the full local bootstrap: Ollama/Qwen, sherpa ASR, Smart Turn, Silero, and Kokoro. If a model asset or optional runtime cannot be prepared, it records the failure and falls back to the mock profile rather than silently claiming full local inference.
 
 ## Local quick start
 
