@@ -14,6 +14,6 @@ The notebook attempts the full local model bootstrap by default:
 
 No AI provider key is required. Cloudflare Quick Tunnel is started for the browser path.
 
-The Quick Tunnel is public, temporary, and not production hosting. It exposes only FastAPI, not Ollama or model workers, and must be stopped before ending the session. The tunnel installer accepts `CLOUDFLARED_URL` and optional `CLOUDFLARED_SHA256` for a pinned binary.
+The Quick Tunnel is public, temporary, and not production hosting. It exposes only FastAPI, not Ollama or model workers, and must be stopped before ending the session. The final cleanup cell defines `cleanup()` but leaves `CLEANUP_ON_RUN_ALL = False`, so running all cells leaves the demo available; call `cleanup()` manually when finished. The tunnel installer accepts `CLOUDFLARED_URL` and optional `CLOUDFLARED_SHA256` for a pinned binary.
 
 For a local model profile, add pinned model assets and set `MODEL_MODE=local`, `TTS_MODE=kokoro`, and the relevant model paths in a separate qualification notebook. Do not attach GitHub, named Cloudflare, R2, or AI provider secrets to the keyless notebook.

@@ -95,6 +95,7 @@ The notebook launcher is in `kaggle/00_kaggle_prototype.ipynb`. It clones the Gi
 - It is public and temporary, not production hosting.
 - It has no SLA.
 - It must be stopped before the notebook session ends.
+- The cleanup cell is manual by default; running all cells does not immediately tear down the demo.
 
 Set `CLOUDFLARED_URL` and `CLOUDFLARED_SHA256` when a pinned Cloudflare binary is required. Do not attach cloud credentials to the keyless notebook. Do not expose Ollama, Jupyter, or model dashboards.
 

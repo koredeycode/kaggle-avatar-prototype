@@ -21,6 +21,8 @@ def main() -> int:
     if shutil.which("ollama"):
         print("ollama already installed")
         return 0
+    if not shutil.which("zstd"):
+        raise SystemExit("zstd is required before installing Ollama; install it with apt-get")
     installer = Path("/tmp/ollama-install.sh")
     urllib.request.urlretrieve(args.url, installer)
     installer.chmod(0o700)
