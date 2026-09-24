@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import secrets
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -102,7 +103,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await websocket.accept()
         session: SessionCoordinator | None = None
         try:
-            first = await websocket.receive_json()
+            first = await asyncio.wait_for(websocket.receive_json(), timeout=10)
             token = str(first.get("token", ""))
             if not secrets.compare_digest(token, selected.runtime_token):
                 await websocket.close(code=1008, reason="invalid runtime token")
@@ -112,8 +113,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return
             async with session_lock:
                 if active_session is not None and not active_session.closed:
-                    await websocket.close(code=4001, reason="prototype session is busy")
-                    return
+                    if time.time() - active_session.last_activity < 180:
+                        await websocket.close(code=4001, reason="prototype session is busy")
+                        return
+                    await active_session.close("stale_session")
                 session = SessionCoordinator(
                     selected,
                     engine,
@@ -154,12 +157,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         await session.handle_message(value)
         except WebSocketDisconnect:
             pass
+        except asyncio.TimeoutError:
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1008, reason="authentication timeout")
         except (ValueError, TypeError, json.JSONDecodeError):
             with contextlib.suppress(Exception):
                 await websocket.close(code=1003, reason="invalid message")
         finally:
             if session is not None:
-                await session.close("websocket_closed")
+                with contextlib.suppress(Exception):
+                    await session.close("websocket_closed")
                 async with session_lock:
                     if active_session is session:
                         active_session = None
@@ -175,7 +182,6 @@ def run() -> None:
     import uvicorn
 
     settings = app.state.settings
-    print(f"Prototype runtime token: {settings.runtime_token}")
     uvicorn.run(app, host=settings.app_host, port=settings.app_port, reload=False)
 
 

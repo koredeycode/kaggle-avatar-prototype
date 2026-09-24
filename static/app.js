@@ -9,6 +9,10 @@ const state = {
   responseId: null,
   turnId: null,
   ptt: false,
+  pttReady: false,
+  captureMode: null,
+  connectionGeneration: 0,
+  pingTimer: null,
   startedAt: performance.now(),
 };
 
@@ -22,6 +26,7 @@ const connectButton = document.querySelector("#connect");
 const disconnectButton = document.querySelector("#disconnect");
 const interruptButton = document.querySelector("#interrupt");
 const pttButton = document.querySelector("#ptt");
+const handsFreeButton = document.querySelector("#handsFree");
 const textButton = document.querySelector("#textMode");
 const textInput = document.querySelector("#text");
 const textForm = document.querySelector("#textForm");
@@ -50,6 +55,7 @@ function setControls(connected) {
   disconnectButton.disabled = !connected;
   interruptButton.disabled = !connected;
   pttButton.disabled = !connected;
+  handsFreeButton.disabled = !connected;
   textButton.disabled = !connected;
   textInput.disabled = !connected;
   textFormInput.disabled = !connected;
@@ -64,7 +70,12 @@ function parseAudioFrame(buffer) {
   const view = new DataView(buffer);
   if (view.byteLength < 77) return null;
   const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1));
-  if (magic !== "AV" || view.getUint8(2) !== 1 || view.getUint8(3) !== 1) return null;
+  const version = view.getUint8(2);
+  const messageType = view.getUint8(3);
+  const flags = view.getUint32(4, false);
+  if (magic !== "AV" || version !== 1 || messageType !== 1 || (flags & ~1) !== 0) return null;
+  const payloadLength = view.getUint32(73, false);
+  if (view.byteLength !== 77 + payloadLength) return null;
   const responseId = uuidFromBytes(new Uint8Array(buffer, 12, 16));
   const turnId = uuidFromBytes(new Uint8Array(buffer, 28, 16));
   const segmentId = uuidFromBytes(new Uint8Array(buffer, 44, 16));
@@ -98,23 +109,46 @@ async function connect() {
     hint.textContent = "Enter the runtime token printed by the notebook.";
     return;
   }
+  connectButton.disabled = true;
+  try {
+    await audio.ensureOutput();
+  } catch (error) {
+    hint.textContent = `Audio output unavailable: ${error.message}`;
+  }
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${location.host}/ws`);
+  const generation = ++state.connectionGeneration;
   state.socket = socket;
   socket.binaryType = "arraybuffer";
-  socket.onopen = () => socket.send(JSON.stringify({ type: "auth", protocol: 1, token, client: "browser" }));
+  socket.onopen = () => {
+    if (state.socket !== socket || generation !== state.connectionGeneration) return;
+    socket.send(JSON.stringify({ type: "auth", protocol: 1, token, client: "browser" }));
+  };
   socket.onmessage = (message) => {
+    if (state.socket !== socket || generation !== state.connectionGeneration) return;
     if (message.data instanceof ArrayBuffer) {
       const frame = parseAudioFrame(message.data);
-      if (frame && frame.responseId === state.responseId) audio.schedule(decodePcm(frame.payload), frame.sampleRate, frame.responseId, frame.mediaSequence);
+      if (frame && frame.sessionEpoch === state.epoch && frame.responseId === state.responseId) {
+        audio.schedule(decodePcm(frame.payload), frame.sampleRate, frame.responseId, frame.mediaSequence);
+      }
       return;
     }
     handleEvent(JSON.parse(message.data));
   };
-  socket.onerror = () => setStatus("connection error");
+  socket.onerror = () => {
+    if (state.socket === socket && generation === state.connectionGeneration) setStatus("connection error");
+  };
   socket.onclose = () => {
+    if (state.socket !== socket || generation !== state.connectionGeneration) return;
     state.connected = false;
+    state.connectionGeneration += 1;
+    state.captureMode = null;
+    state.ptt = false;
+    state.pttReady = false;
     state.responseId = null;
+    if (state.pingTimer) clearInterval(state.pingTimer);
+    state.pingTimer = null;
+    handsFreeButton.textContent = "Start hands-free";
     audio.stop();
     avatar.reset();
     setStatus("offline");
@@ -141,6 +175,7 @@ function renderMetrics(snapshot) {
 function handleEvent(value) {
   const type = value.type;
   const payload = value.payload || {};
+  if (type !== "ready" && value.session_epoch !== state.epoch) return;
   if (type === "metrics.snapshot") {
     renderMetrics(payload);
     return;
@@ -156,6 +191,8 @@ function handleEvent(value) {
     state.epoch = value.session_epoch;
     setStatus("ready");
     setControls(true);
+    if (state.pingTimer) clearInterval(state.pingTimer);
+    state.pingTimer = setInterval(() => send({ type: "ping", client_time: Date.now() }), 15000);
     addCaption("system", "Connected. Use headphones for the first microphone test.", true);
     return;
   }
@@ -179,9 +216,8 @@ function handleEvent(value) {
     if (value.response_id) state.responseId = value.response_id;
     setStatus(assistantState);
     avatar.setSpeaking(assistantState === "speaking");
-    if (assistantState === "speaking") {
-      audio.currentResponse = state.responseId;
-      audio.nextStart = audio.context ? audio.context.currentTime + 0.03 : 0;
+    if (assistantState === "speaking" && state.responseId && audio.currentResponse !== state.responseId) {
+      audio.beginResponse(state.responseId);
     }
     return;
   }
@@ -200,7 +236,7 @@ function handleEvent(value) {
   }
   if (type === "assistant.audio") {
     state.responseId = value.response_id;
-    audio.currentResponse = value.response_id;
+    if (audio.currentResponse !== value.response_id) audio.beginResponse(value.response_id);
     return;
   }
   if (type === "avatar.cues") {
@@ -214,6 +250,7 @@ function handleEvent(value) {
   }
   if (type === "response.cancelled") {
     audio.clear();
+    state.responseId = null;
     avatar.interrupt();
     setStatus("listening");
     addCaption("system", "Response interrupted.", true);
@@ -224,6 +261,12 @@ function handleEvent(value) {
       hint.textContent = "Local LLM is unavailable; mock text response is active.";
     } else if (payload.code === "vad_unavailable") {
       hint.textContent = "Silero VAD is unavailable; energy-based fallback is active.";
+    } else if (payload.code === "asr_unavailable") {
+      hint.textContent = "Local ASR is unavailable; using the fallback transcript.";
+    } else if (payload.code === "turn_detector_unavailable") {
+      hint.textContent = "Turn detection is unavailable; using the manual fallback.";
+    } else if (payload.code === "tts_fallback") {
+      hint.textContent = "Local TTS is unavailable; using the mock audio fallback.";
     } else {
       hint.textContent = `Prototype warning: ${payload.code}`;
     }
@@ -234,18 +277,58 @@ function handleEvent(value) {
   }
 }
 
-async function startMicrophone(mode = "hands_free") {
+async function startMicrophone(mode = "hands_free", requestId = "") {
+  const connectionGeneration = state.connectionGeneration;
   try {
     audio.onCapture = (pcm) => {
-      if (state.socket?.readyState === WebSocket.OPEN && state.connected) state.socket.send(pcm);
+      const active = state.captureMode === "hands_free" || (state.captureMode === "manual" && state.ptt);
+      if (active && state.socket?.readyState === WebSocket.OPEN && state.connected) state.socket.send(pcm);
     };
     audio.onPlayed = (responseId, mediaSequence) => send({ type: "playout.ack", response_id: responseId, media_sequence: mediaSequence });
+    await audio.ensureOutput();
+    state.captureMode = mode;
+    const message = {
+      type: "input.start",
+      mode,
+      sample_rate: audio.context?.sampleRate || 48000,
+    };
+    if (requestId) message.request_id = requestId;
+    send(message);
+    if (mode === "manual") state.pttReady = true;
     await audio.start();
-    send({ type: "input.start", mode });
+    if (!state.connected || connectionGeneration !== state.connectionGeneration) {
+      send({ type: "input.cancel", request_id: requestId });
+      state.captureMode = null;
+      state.pttReady = false;
+      audio.stopCapture();
+      return;
+    }
+    if (mode === "manual" && !state.ptt) {
+      send({ type: "input.cancel", request_id: requestId });
+      state.captureMode = null;
+      state.pttReady = false;
+      audio.stopCapture();
+      return;
+    }
     setStatus("listening");
     hint.textContent = mode === "manual" ? "Push-to-talk is active." : "Microphone is live. Speak and pause.";
   } catch (error) {
+    send({ type: "input.cancel", request_id: requestId });
+    state.captureMode = null;
+    state.pttReady = false;
+    audio.stopCapture();
     hint.textContent = `Microphone unavailable: ${error.message}`;
+  }
+}
+
+function finishPtt() {
+  if (!state.ptt && !state.pttReady) return;
+  state.ptt = false;
+  if (state.pttReady) {
+    send({ type: "input.end", request_id: state.pttRequestId || crypto.randomUUID() });
+    state.pttReady = false;
+    state.captureMode = null;
+    audio.stopCapture();
   }
 }
 
@@ -256,17 +339,29 @@ interruptButton.addEventListener("click", () => {
   audio.clear();
   avatar.interrupt();
 });
-pttButton.addEventListener("pointerdown", () => {
+pttButton.addEventListener("pointerdown", (event) => {
+  if (!state.connected || state.captureMode === "hands_free") return;
   state.ptt = true;
   const requestId = crypto.randomUUID();
   state.pttRequestId = requestId;
-  send({ type: "input.start", mode: "manual", request_id: requestId });
-  void startMicrophone("manual");
+  try { event.currentTarget.setPointerCapture(event.pointerId); } catch (error) { void error; }
+  void startMicrophone("manual", requestId);
 });
-pttButton.addEventListener("pointerup", () => {
-  if (!state.ptt) return;
-  state.ptt = false;
-  send({ type: "input.end", request_id: state.pttRequestId || crypto.randomUUID() });
+pttButton.addEventListener("pointerup", finishPtt);
+pttButton.addEventListener("pointercancel", finishPtt);
+pttButton.addEventListener("lostpointercapture", finishPtt);
+handsFreeButton.addEventListener("click", async () => {
+  if (!state.connected) return;
+  if (state.captureMode === "hands_free") {
+    send({ type: "input.end" });
+    state.captureMode = null;
+    audio.stopCapture();
+    handsFreeButton.textContent = "Start hands-free";
+    setStatus("ready");
+    return;
+  }
+  await startMicrophone("hands_free");
+  if (state.captureMode === "hands_free") handsFreeButton.textContent = "Stop hands-free";
 });
 function submitText(value) {
   const text = value.trim();

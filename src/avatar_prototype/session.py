@@ -57,6 +57,7 @@ class SessionCoordinator:
         self.speech_active = False
         self.last_voice_at = 0.0
         self.voice_commit_task: asyncio.Task[None] | None = None
+        self.input_generation = 0
         self.active_turn_id: str | None = None
         self.active_response_id: str | None = None
         self.active_user_text = ""
@@ -68,6 +69,7 @@ class SessionCoordinator:
         self.segments: list[AssistantSegment] = []
         self.transcript: list[dict[str, str]] = []
         self.input_mode = "hands_free"
+        self.input_sample_rate = 48_000
         self.last_playback_ack = -1
         self.closed = False
 
@@ -149,7 +151,7 @@ class SessionCoordinator:
             return
         self.audio_buffer.extend(data)
         if self.vad is not None:
-            vad_samples = resample_linear(pcm16_to_float(data), 48_000, 16_000)
+            vad_samples = resample_linear(pcm16_to_float(data), self.input_sample_rate, 16_000)
             vad_audio = float_to_pcm16(vad_samples)
             try:
                 level = await asyncio.to_thread(self.vad.is_speech, vad_audio, 16000)
@@ -181,7 +183,9 @@ class SessionCoordinator:
         elif self.speech_active and self.input_mode == "hands_free":
             if (now - self.last_voice_at) * 1000 >= self.settings.silence_ms:
                 if self.voice_commit_task is None or self.voice_commit_task.done():
-                    self.voice_commit_task = asyncio.create_task(self._commit_voice_turn())
+                    self.voice_commit_task = asyncio.create_task(
+                        self._commit_voice_turn(generation=self.input_generation)
+                    )
 
     async def handle_message(self, message: dict[str, Any]) -> None:
         if self.closed:
@@ -190,12 +194,27 @@ class SessionCoordinator:
         message_type = str(message.get("type", ""))
         self.metrics.increment(f"message.{message_type or 'unknown'}")
         if message_type == "input.start":
+            self.input_generation += 1
+            task = self.voice_commit_task
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            self.voice_commit_task = None
             self.input_mode = str(message.get("mode", "hands_free"))
+            sample_rate = message.get("sample_rate")
+            if isinstance(sample_rate, (int, float)) and 8_000 <= int(sample_rate) <= 192_000:
+                self.input_sample_rate = int(sample_rate)
             self.speech_active = False
             self.last_voice_at = time.monotonic()
         elif message_type == "input.end":
-            await self._commit_voice_turn(request_id=str(message.get("request_id", "")))
+            await self._commit_voice_turn(
+                request_id=str(message.get("request_id", "")),
+                force=True,
+                generation=self.input_generation,
+            )
         elif message_type == "input.cancel":
+            self.input_generation += 1
             self.audio_buffer.clear()
             self.speech_active = False
             task = self.voice_commit_task
@@ -213,9 +232,10 @@ class SessionCoordinator:
             await self.cancel_active_response("client_request")
         elif message_type == "playout.ack":
             sequence = int(message.get("media_sequence", -1))
+            response_id = str(message.get("response_id", ""))
             self.last_playback_ack = max(self.last_playback_ack, sequence)
             for segment in self.segments:
-                if segment.response_id == self.active_response_id:
+                if segment.response_id == response_id:
                     segment.last_acknowledged_sequence = max(segment.last_acknowledged_sequence, sequence)
         elif message_type == "input.local_hint":
             if self.active_response_task_running:
@@ -231,30 +251,58 @@ class SessionCoordinator:
         elif message_type == "close":
             await self.close("client_close")
 
-    async def _commit_voice_turn(self, request_id: str = "") -> None:
+    async def _commit_voice_turn(
+        self,
+        request_id: str = "",
+        *,
+        force: bool = False,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and generation != self.input_generation:
+            return
         if self.closed or not self.audio_buffer:
             return
         turn_started = time.monotonic()
         audio = bytes(self.audio_buffer)
-        if self.smart_turn is not None:
+        self.audio_buffer.clear()
+        if self.smart_turn is not None and not force and self.input_mode == "hands_free":
             smart_started = time.monotonic()
-            samples = resample_linear(pcm16_to_float(audio), 48_000, 16_000)
+            samples = resample_linear(pcm16_to_float(audio), self.input_sample_rate, 16_000)
             smart_audio = float_to_pcm16(samples)
             try:
                 complete = await asyncio.to_thread(self.smart_turn.is_complete, smart_audio)
                 self.metrics.observe("turn.smart", (time.monotonic() - smart_started) * 1000.0)
-            except TurnDetectorUnavailable:
-                await self.emit("error.recoverable", {"code": "turn_detector_unavailable", "recoverable": True})
+            except Exception as exc:
+                if not isinstance(exc, TurnDetectorUnavailable):
+                    self.metrics.increment("turn.error")
+                await self.emit(
+                    "error.recoverable",
+                    {"code": "turn_detector_unavailable", "recoverable": True, "fallback": "asr"},
+                )
+                complete = True
+            if generation is not None and generation != self.input_generation:
                 return
             if not complete:
+                self.audio_buffer[:0] = audio
                 self.speech_active = True
                 return
-        self.audio_buffer.clear()
         self.speech_active = False
         asr_started = time.monotonic()
-        text = await self.engine.transcribe_voice(audio)
+        try:
+            text = await self.engine.transcribe_voice(audio, self.input_sample_rate)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.metrics.increment("asr.error")
+            await self.emit(
+                "error.recoverable",
+                {"code": "asr_unavailable", "recoverable": True},
+            )
+            return
         self.metrics.observe("asr.voice_turn", (time.monotonic() - asr_started) * 1000.0)
         if not text:
+            return
+        if generation is not None and generation != self.input_generation:
             return
         self.metrics.observe("turn.commit", (time.monotonic() - turn_started) * 1000.0)
         await self._commit_text_turn(text, request_id, source="voice")
@@ -285,6 +333,7 @@ class SessionCoordinator:
         await self.emit("assistant.state", {"state": "thinking"}, turn_id=turn_id, response_id=response_id)
 
         async def run() -> None:
+            failed = False
             try:
                 assistant_text = await self.engine.stream_response(
                     text,
@@ -302,21 +351,43 @@ class SessionCoordinator:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                await self.emit(
-                    "error.recoverable",
-                    {"code": "response_failed", "recoverable": True},
-                    turn_id=turn_id,
-                    response_id=response_id,
-                )
-            if response_id not in self.cancelled_responses:
-                self.transcript.append({"role": "assistant", "text": self.active_assistant_text, "turn_id": turn_id})
-                await self.emit(
-                    "response.completed",
-                    {"text": self.active_assistant_text, "history": "conservative"},
-                    turn_id=turn_id,
-                    response_id=response_id,
-                )
-                await self.emit("metrics.snapshot", self.metrics.snapshot())
+                failed = True
+                with contextlib.suppress(Exception):
+                    await self.emit(
+                        "error.recoverable",
+                        {"code": "response_failed", "recoverable": True},
+                        turn_id=turn_id,
+                        response_id=response_id,
+                    )
+            if failed or response_id in self.cancelled_responses:
+                if failed and response_id not in self.cancelled_responses:
+                    with contextlib.suppress(Exception):
+                        await self.emit(
+                            "response.cancelled",
+                            {"reason": "response_failed", "history": "conservative"},
+                            response_id=response_id,
+                        )
+                if self.active_response_id == response_id:
+                    self.active_response_id = None
+                    self.active_turn_id = None
+                    self.response_started_at = None
+                if self.response_task is asyncio.current_task():
+                    self.response_task = None
+                return
+            self.transcript.append({"role": "assistant", "text": self.active_assistant_text, "turn_id": turn_id})
+            await self.emit(
+                "response.completed",
+                {"text": self.active_assistant_text, "history": "conservative"},
+                turn_id=turn_id,
+                response_id=response_id,
+            )
+            await self.emit("metrics.snapshot", self.metrics.snapshot())
+            if self.active_response_id == response_id:
+                self.active_response_id = None
+                self.active_turn_id = None
+                self.response_started_at = None
+            if self.response_task is asyncio.current_task():
+                self.response_task = None
 
         self.response_task = asyncio.create_task(run())
 
@@ -337,20 +408,28 @@ class SessionCoordinator:
         for segment in self.segments:
             if segment.response_id == response_id and segment.state == "generated":
                 segment.state = "cancelled"
-        await self.emit("response.cancelled", {"reason": reason, "history": "conservative"}, response_id=response_id)
+        with contextlib.suppress(Exception):
+            await self.emit("response.cancelled", {"reason": reason, "history": "conservative"}, response_id=response_id)
         self.active_response_id = None
+        self.active_turn_id = None
         self.response_started_at = None
         self.response_task = None
 
     async def close(self, reason: str) -> None:
         if self.closed:
             return
-        await self.cancel_active_response(reason)
-        if self.voice_commit_task is not None and not self.voice_commit_task.done():
-            self.voice_commit_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.voice_commit_task
-        self.closed = True
-        self.audio_buffer.clear()
-        self.transcript.clear()
-        self.segments.clear()
+        try:
+            await self.cancel_active_response(reason)
+            if self.voice_commit_task is not None and not self.voice_commit_task.done():
+                self.voice_commit_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.voice_commit_task
+        finally:
+            self.closed = True
+            self.active_response_id = None
+            self.active_turn_id = None
+            self.response_started_at = None
+            self.response_task = None
+            self.audio_buffer.clear()
+            self.transcript.clear()
+            self.segments.clear()

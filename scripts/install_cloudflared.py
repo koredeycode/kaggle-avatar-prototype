@@ -34,7 +34,9 @@ def main() -> int:
         return 0
     args.path.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.path.with_suffix(".download")
-    urllib.request.urlretrieve(args.url, temporary)
+    request = urllib.request.Request(args.url or DEFAULT_URL, headers={"User-Agent": "kaggle-avatar-prototype/0.1"})
+    with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as stream:
+        shutil.copyfileobj(response, stream)
     if args.sha256 and file_hash(temporary) != args.sha256:
         temporary.unlink(missing_ok=True)
         raise SystemExit("cloudflared checksum mismatch")

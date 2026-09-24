@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from .asr import ASRUnavailable, SherpaStreamingASR
+from .asr import SherpaStreamingASR
 from .audio import (
     float_to_pcm16,
     iter_pcm_chunks,
@@ -50,7 +50,7 @@ class OllamaClient:
             },
         }
         timeout = httpx.Timeout(30.0, connect=3.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             async with client.stream("POST", f"{self.settings.ollama_url}/api/chat", json=payload) as response:
                 if response.status_code >= 400:
                     body = await response.aread()
@@ -93,23 +93,27 @@ class KokoroTTS:
             return
         try:
             from kokoro import KPipeline
-        except ImportError as exc:
-            raise ModelError("Kokoro is not installed") from exc
-        self._pipeline = KPipeline(lang_code="a")
-        self._sample_rate = int(getattr(self._pipeline, "sampling_rate", 24_000))
+
+            self._pipeline = KPipeline(lang_code="a")
+            self._sample_rate = int(getattr(self._pipeline, "sampling_rate", 24_000))
+        except Exception as exc:
+            self._pipeline = None
+            raise ModelError("Kokoro is unavailable") from exc
 
     def synthesize_sync(self, text: str) -> bytes:
-        self.load()
-        assert self._pipeline is not None
-        chunks: list[np.ndarray] = []
         try:
+            self.load()
+            assert self._pipeline is not None
+            chunks: list[np.ndarray] = []
             for _, _, audio in self._pipeline(text, voice=self.settings.kokoro_voice):
                 chunks.append(np.asarray(audio, dtype=np.float32))
+            if not chunks:
+                return b""
+            return float_to_pcm16(np.concatenate(chunks))
+        except ModelError:
+            raise
         except Exception as exc:
             raise ModelError(f"Kokoro synthesis failed: {exc}") from exc
-        if not chunks:
-            return b""
-        return float_to_pcm16(np.concatenate(chunks))
 
     async def synthesize(self, text: str) -> bytes:
         return await asyncio.to_thread(self.synthesize_sync, text)
@@ -136,16 +140,22 @@ class ConversationEngine:
         self.mock_tts = MockTTS()
         self.kokoro_tts = KokoroTTS(settings)
 
-    async def transcribe_voice(self, audio: bytes) -> str:
+    async def transcribe_voice(self, audio: bytes, sample_rate: int = 48_000) -> str:
         if self.settings.model_mode == "mock" or self.asr is None:
             return "Voice input received"
         try:
-            normalized = float_to_pcm16(resample_linear(pcm16_to_float(audio), 48_000, self.asr.config.sample_rate))
-            text = await asyncio.to_thread(self.asr.transcribe_pcm16, normalized)
-            self.asr.reset()
+            normalized = float_to_pcm16(
+                resample_linear(pcm16_to_float(audio), sample_rate, self.asr.config.sample_rate)
+            )
+            try:
+                text = await asyncio.to_thread(self.asr.transcribe_pcm16, normalized)
+            finally:
+                self.asr.reset()
             return text or "Voice input received"
-        except ASRUnavailable:
-            return "Voice input received; configure the sherpa adapter for local transcription"
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return "Voice input received; local ASR is unavailable."
 
     async def _response_text(self, user_text: str) -> str:
         if self.settings.model_mode == "mock":
@@ -161,7 +171,9 @@ class ConversationEngine:
         try:
             async for delta in self.ollama.stream(messages):
                 pieces.append(delta)
-        except (ModelError, OSError, TimeoutError) as exc:
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
             raise ModelError(f"local LLM unavailable: {exc}") from exc
         text = "".join(pieces).strip()
         if not text:
@@ -252,7 +264,9 @@ class ConversationEngine:
                 else:
                     audio = await self.mock_tts.synthesize(clause)
                     sample_rate = self.mock_tts.sample_rate
-            except ModelError:
+            except asyncio.CancelledError:
+                raise
+            except Exception:
                 audio = await self.mock_tts.synthesize(clause)
                 sample_rate = self.mock_tts.sample_rate
                 await emit_json(

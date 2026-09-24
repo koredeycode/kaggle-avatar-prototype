@@ -1,7 +1,7 @@
 class PcmCaptureProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.buffer = new Float32Array(2048);
+    this.buffer = new Float32Array(512);
     this.offset = 0;
   }
 

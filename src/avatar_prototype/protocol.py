@@ -24,6 +24,11 @@ class AudioFrame:
     payload: bytes
     final: bool = False
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "response_id", uuid.UUID(str(self.response_id)))
+        object.__setattr__(self, "turn_id", uuid.UUID(str(self.turn_id)))
+        object.__setattr__(self, "segment_id", uuid.UUID(str(self.segment_id)))
+
 
 def uuid_bytes(value: str | uuid.UUID) -> bytes:
     return uuid.UUID(str(value)).bytes
@@ -69,9 +74,9 @@ def unpack_audio_frame(data: bytes) -> AudioFrame:
     ) = HEADER.unpack(data[: HEADER.size])
     if magic != MAGIC or version != VERSION or message_type != TYPE_AUDIO:
         raise ValueError("invalid audio frame header")
-    payload = data[HEADER.size : HEADER.size + payload_length]
-    if len(payload) != payload_length:
-        raise ValueError("audio frame payload is truncated")
+    if len(data) != HEADER.size + payload_length:
+        raise ValueError("audio frame payload length is invalid")
+    payload = data[HEADER.size:]
     return AudioFrame(
         session_epoch=session_epoch,
         response_id=uuid.UUID(bytes=response_bytes),

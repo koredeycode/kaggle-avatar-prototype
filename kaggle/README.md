@@ -4,13 +4,13 @@ The notebook clones the GitHub repository into `/kaggle/working/kaggle-avatar-pr
 
 For a public repository, no GitHub credential is needed. For a private repository, set `GITHUB_PRIVATE=true` and attach a Kaggle Secret named `GITHUB_TOKEN`; the notebook uses a temporary `GIT_ASKPASS` helper and never writes the token into the URL, repository config, notebook output, or source file.
 
-The notebook attempts the full local model bootstrap by default:
+The notebook defaults to the reliable `mock` profile and does not download optional models:
 
-- Installs the local speech/ONNX runtime dependencies and system audio tools.
-- Installs Ollama and pulls `qwen3:8b`.
-- Downloads the sherpa English streaming model, Smart Turn ONNX, and Kokoro assets.
-- Uses Silero VAD, Smart Turn, sherpa, Qwen, and Kokoro when the manifest succeeds.
-- Falls back to `mock` mode with a visible warning if an asset/runtime fails.
+- Connects the browser to a local FastAPI/WebSocket server.
+- Verifies a text response and PCM audio frame with `scripts/smoke_test.py`.
+- Keeps the microphone path available through PTT and hands-free controls.
+- Uses `MODEL_PROFILE=local` only when you explicitly want the optional Ollama, sherpa, and Kokoro bootstrap.
+- Keeps Smart Turn and Silero disabled until their model contracts are qualified.
 
 No AI provider key is required. Cloudflare Quick Tunnel is started for the browser path.
 

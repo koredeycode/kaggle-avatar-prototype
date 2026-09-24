@@ -50,17 +50,25 @@ class SmartTurn:
         )
 
     def is_complete(self, pcm16: bytes) -> bool:
-        self.load()
-        if self.session is None:
-            raise TurnDetectorUnavailable("Smart Turn session is unavailable")
-        import numpy as np
+        try:
+            self.load()
+            if self.session is None:
+                raise TurnDetectorUnavailable("Smart Turn session is unavailable")
+            import numpy as np
 
-        samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
-        if samples.size == 0 or samples.size / self.config.sample_rate > self.config.max_input_seconds:
-            return False
-        input_name = self.session.get_inputs()[0].name
-        result = self.session.run(None, {input_name: samples[None, :]})
-        values = result[0].reshape(-1)
-        if values.size == 0:
-            return False
-        return bool(float(values[-1]) >= self.config.threshold)
+            samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
+            if samples.size == 0:
+                return False
+            max_samples = self.config.sample_rate * self.config.max_input_seconds
+            if samples.size > max_samples:
+                samples = samples[-max_samples:]
+            input_name = self.session.get_inputs()[0].name
+            result = self.session.run(None, {input_name: samples[None, :]})
+            values = result[0].reshape(-1)
+            if values.size == 0:
+                return False
+            return bool(float(values[-1]) >= self.config.threshold)
+        except TurnDetectorUnavailable:
+            raise
+        except Exception as exc:
+            raise TurnDetectorUnavailable("Smart Turn inference failed") from exc

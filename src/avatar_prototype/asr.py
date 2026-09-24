@@ -81,6 +81,11 @@ class SherpaStreamingASR:
 
         samples = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
         self.stream.accept_waveform(self.config.sample_rate, samples)
+        tail = np.zeros(int(self.config.sample_rate * 0.3), dtype=np.float32)
+        self.stream.accept_waveform(self.config.sample_rate, tail)
+        input_finished = getattr(self.stream, "input_finished", None)
+        if callable(input_finished):
+            input_finished()
         while self.recognizer.is_ready(self.stream):
             self.recognizer.decode_stream(self.stream)
         return str(self.recognizer.get_result(self.stream))

@@ -74,3 +74,32 @@ async def test_session_text_turn() -> None:
     assert any(item.get("type") == "assistant.text.delta" for item in events)
     assert audio
     await session.close("test")
+
+
+@pytest.mark.asyncio
+async def test_session_mock_voice_turn() -> None:
+    events: list[dict[str, object]] = []
+    audio: list[bytes] = []
+
+    async def send_json(value: dict[str, object]) -> None:
+        events.append(value)
+
+    async def send_audio(value: bytes) -> None:
+        audio.append(value)
+
+    settings = Settings(runtime_token="test", model_mode="mock", vad_mode="mock")
+    session = SessionCoordinator(
+        settings,
+        ConversationEngine(settings),
+        send_json,
+        send_audio,
+        session_id="voice-session",
+    )
+    await session.handle_message({"type": "input.start", "mode": "manual", "sample_rate": 48000})
+    await session.handle_audio(b"\x00\x00")
+    await session.handle_message({"type": "input.end", "request_id": "voice-1"})
+    await asyncio.sleep(0.05)
+    assert any(item.get("type") == "stt.final" for item in events)
+    assert any(item.get("type") == "assistant.text.delta" for item in events)
+    assert audio
+    await session.close("test")

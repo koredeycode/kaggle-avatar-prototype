@@ -87,7 +87,9 @@ def main() -> int:
         if args.strict:
             raise
     output = args.root / "model-manifest.json"
-    output.write_text(json.dumps(manifest, indent=2))
+    temporary_output = output.with_suffix(".json.tmp")
+    temporary_output.write_text(json.dumps(manifest, indent=2))
+    temporary_output.replace(output)
     print(json.dumps(manifest, indent=2))
     return 0 if not manifest["errors"] else 1
 
