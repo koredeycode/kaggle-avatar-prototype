@@ -44,6 +44,7 @@ class SessionCoordinator:
         self.settings = settings
         self.engine = engine
         self.vad = SileroVAD() if settings.vad_mode == "silero" else None
+        self.vad_fallback = False
         self.smart_turn = SmartTurn.from_env() if settings.smart_turn_mode == "smart" else None
         self.metrics = MetricsRegistry()
         self.send_json = send_json
@@ -153,9 +154,16 @@ class SessionCoordinator:
             try:
                 level = await asyncio.to_thread(self.vad.is_speech, vad_audio, 16000)
             except VADUnavailable:
-                await self.emit("error.recoverable", {"code": "vad_unavailable", "recoverable": True})
-                self.audio_buffer.clear()
-                return
+                first_failure = not self.vad_fallback
+                self.vad = None
+                self.vad_fallback = True
+                if first_failure:
+                    self.metrics.increment("vad.fallback")
+                    await self.emit(
+                        "error.recoverable",
+                        {"code": "vad_unavailable", "recoverable": True, "fallback": "energy"},
+                    )
+                level = rms(pcm16_to_float(data))
         else:
             level = rms(pcm16_to_float(data))
         self.metrics.observe("vad.frame", (time.monotonic() - vad_started) * 1000.0)
@@ -163,10 +171,12 @@ class SessionCoordinator:
         if level >= self.settings.speech_rms_threshold:
             if not self.speech_active:
                 self.speech_active = True
-                await self.emit(
-                    "speech.started",
-                    {"source": "local_energy_mock" if self.settings.vad_mode == "mock" else "vad"},
+                source = (
+                    "local_energy_mock"
+                    if self.vad_fallback or self.settings.vad_mode == "mock"
+                    else "vad"
                 )
+                await self.emit("speech.started", {"source": source})
             self.last_voice_at = now
         elif self.speech_active and self.input_mode == "hands_free":
             if (now - self.last_voice_at) * 1000 >= self.settings.silence_ms:

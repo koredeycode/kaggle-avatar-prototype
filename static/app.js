@@ -218,7 +218,13 @@ function handleEvent(value) {
     return;
   }
   if (type === "error.recoverable") {
-    hint.textContent = payload.code === "llm_unavailable" ? "Local LLM is unavailable; mock text response is active." : `Prototype warning: ${payload.code}`;
+    if (payload.code === "llm_unavailable") {
+      hint.textContent = "Local LLM is unavailable; mock text response is active.";
+    } else if (payload.code === "vad_unavailable") {
+      hint.textContent = "Silero VAD is unavailable; energy-based fallback is active.";
+    } else {
+      hint.textContent = `Prototype warning: ${payload.code}`;
+    }
     return;
   }
   if (type === "pong") {
